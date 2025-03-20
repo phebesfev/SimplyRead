@@ -13,6 +13,14 @@
             "js": ["content.js"]
         }
     ],
+    "icons": {
+        "16": "icon.png",
+        "48": "icon.png",
+        "128": "icon.png"
+    },
+    "action": {
+        "default_icon": "icon.png"
+    },
     "content_security_policy": {
         "extension_pages": "script-src 'self'; object-src 'none';"
     }

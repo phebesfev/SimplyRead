@@ -120,3 +120,91 @@ document.addEventListener("dblclick", async (event) => {
 
     console.log(`Replaced '${selectedText}' with '${simplerWord}' (red color).`);
 });
+
+
+
+// Bias & Misinformation Detection
+async function analyzeTextForBias(text) {
+    try {
+        if (!GEMINI_API_KEY) await fetchAPIKey();
+
+        const response = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    contents: [
+                        {
+                            parts: [
+                                {
+                                    text: `Analyze the following paragraph for bias, misinformation, or sensationalism. 
+                                           If biased, explain why briefly. If misinformation, correct it. 
+                                           Otherwise, return 'Neutral'. Provide a 1-2 sentence explanation.
+                                           \n\nParagraph: "${text}"`
+                                }
+                            ]
+                        }
+                    ]
+                })
+            }
+        );
+
+        if (!response.ok) throw new Error(`API Error: ${response.status} - ${response.statusText}`);
+
+        const data = await response.json();
+        const analysis = data?.candidates?.[0]?.content?.parts?.[0]?.text || "No analysis available.";
+
+        return analysis;
+        
+    } catch (error) {
+        console.error("Failed to analyze text:", error);
+        return "Error analyzing text.";
+    }
+}
+
+// Function to create a floating box for displaying analysis
+function createAnalysisBox(result) {
+    let existingBox = document.getElementById("bias-analysis-box");
+    if (existingBox) existingBox.remove(); // Remove old box if present
+
+    let analysisBox = document.createElement("div");
+    analysisBox.id = "bias-analysis-box";
+    analysisBox.textContent = result;
+
+    // Style the box
+    analysisBox.style.position = "fixed";
+    analysisBox.style.bottom = "20px";
+    analysisBox.style.left = "50%";
+    analysisBox.style.transform = "translateX(-50%)";
+    analysisBox.style.padding = "15px";
+    analysisBox.style.borderRadius = "8px";
+    analysisBox.style.boxShadow = "0px 4px 10px rgba(0,0,0,0.2)";
+    analysisBox.style.fontSize = "16px";
+    analysisBox.style.fontWeight = "bold";
+    analysisBox.style.zIndex = "9999";
+    analysisBox.style.backgroundColor = result.toLowerCase().includes("neutral") ? "#4CAF50" : "#D32F2F";
+    analysisBox.style.color = "white";
+    analysisBox.style.maxWidth = "80%";
+    analysisBox.style.textAlign = "center";
+
+    document.body.appendChild(analysisBox);
+
+    // Remove the box after 7 seconds
+    setTimeout(() => {
+        if (analysisBox) analysisBox.remove();
+    }, 7000);
+}
+
+// Detect text selection and trigger analysis (only for full sentences/paragraphs)
+document.addEventListener("mouseup", async () => {
+    let selection = window.getSelection().toString().trim();
+
+    if (selection.length > 20 && selection.includes(".")) { // Ensure it's at least a sentence
+        console.log(`Analyzing selected text: "${selection}"`);
+        let result = await analyzeTextForBias(selection);
+        createAnalysisBox(result);
+    } else {
+        console.log("Selected text is too short for bias detection.");
+    }
+});
