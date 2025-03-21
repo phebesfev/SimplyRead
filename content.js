@@ -3,6 +3,7 @@ console.log("SimplyRead content script loaded.");
 // Store original words and their replacements
 const wordToggles = new Map();
 let GEMINI_API_KEY = "";
+let readAloudCounter = 0; // To generate unique IDs
 
 // Function to get API key
 function fetchAPIKey() {
@@ -20,10 +21,13 @@ function fetchAPIKey() {
     });
 }
 
-// Function to get simpler synonym using Gemini API
-async function getSimplerWord(word, context) {
+// Function to get a simpler synonym using Gemini API, with a readability level
+async function getSimplerWord(word, context, level) {
     try {
         if (!GEMINI_API_KEY) await fetchAPIKey();
+
+        const prompt = `Provide only one synonym for '${word}' suitable for a ${level} readability level in this context: ${context}. 
+                        Do NOT return a full sentence or explanation—only a single word response.`;
 
         const response = await fetch(
             `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
@@ -32,14 +36,7 @@ async function getSimplerWord(word, context) {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     contents: [
-                        {
-                            parts: [
-                                {
-                                    text: `Provide only one simpler synonym (a single word) for '${word}' in this context: ${context}. 
-                                    Do NOT return a full sentence or explanation—only a single word response.`
-                                }
-                            ]
-                        }
+                        { parts: [{ text: prompt }] }
                     ]
                 })
             }
@@ -49,162 +46,155 @@ async function getSimplerWord(word, context) {
 
         const data = await response.json();
         const synonymText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-
-        // Extract only the first word (if the API still returns a phrase)
         const simplerWord = synonymText.split(/[.,\s]/)[0].trim();
 
         return simplerWord && simplerWord !== word ? simplerWord : word;
-        
     } catch (error) {
         console.error("Failed to fetch simpler word:", error);
-        return word; // If API fails, return the original word
+        return word;
     }
 }
 
-// Function to replace or restore a word on double click
+// Function to create a dropdown for selecting difficulty level
+function chooseDifficulty(selectedWord, x, y) {
+    return new Promise((resolve) => {
+        const popup = document.createElement("div");
+        popup.id = "difficulty-popup";
+        popup.style.position = "absolute";
+        popup.style.left = `${x}px`;
+        popup.style.top = `${y + 20}px`; // Positioning below the selection
+        popup.style.background = "#f8f9fa";
+        popup.style.color = "#333";
+        popup.style.padding = "10px";
+        popup.style.borderRadius = "8px";
+        popup.style.boxShadow = "0px 4px 6px rgba(0, 0, 0, 0.1)";
+        popup.style.zIndex = "10000";
+        popup.style.textAlign = "center";
+        popup.style.fontFamily = "Montserrat, sans-serif";
+        popup.style.fontSize = "14px";
+
+        const message = document.createElement("p");
+        message.textContent = `Choose difficulty for "${selectedWord}":`;
+        message.style.marginBottom = "8px";
+        popup.appendChild(message);
+
+        // Create dropdown
+        const select = document.createElement("select");
+        select.style.padding = "8px";
+        select.style.border = "1px solid #ccc";
+        select.style.borderRadius = "5px";
+        select.style.fontSize = "14px";
+        select.style.cursor = "pointer";
+        select.style.background = "white";
+        select.style.color = "#333";
+
+        const difficulties = ["Very Easy", "Easy", "Medium"];
+        difficulties.forEach(level => {
+            const option = document.createElement("option");
+            option.textContent = level;
+            option.value = level;
+            select.appendChild(option);
+        });
+
+        select.addEventListener("change", (e) => {
+            cleanup();
+            resolve(e.target.value);
+        });
+
+        popup.appendChild(select);
+        document.body.appendChild(popup);
+
+        function cleanup() {
+            if (popup) document.body.removeChild(popup);
+            document.removeEventListener("click", outsideClickListener);
+        }
+
+        function outsideClickListener(e) {
+            if (!popup.contains(e.target)) {
+                cleanup();
+                resolve(null);
+            }
+        }
+        document.addEventListener("click", outsideClickListener);
+    });
+}
+
+// Replace or restore a word on double-click
 document.addEventListener("dblclick", async (event) => {
     console.log("Double-click detected!");
-
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return;
 
     const range = selection.getRangeAt(0);
     const selectedText = selection.toString().trim();
-    if (!selectedText || selectedText.split(" ").length > 1) return; // Ignore multi-word selections
+    if (!selectedText || selectedText.split(" ").length > 1) return;
 
-    let node = range.startContainer;
-    if (node.nodeType !== 3) return; // Ensure it's a text node
+    const rect = range.getBoundingClientRect();
+    const chosenDifficulty = await chooseDifficulty(selectedText, rect.left, rect.bottom);
 
-    let parentElement = node.parentElement;
-    let fullText = parentElement.innerText;
-
-    // Check if the word was previously replaced
-    let existingSpan = document.querySelector(`span.simplified-word[data-word="${selectedText}"]`);
-    if (existingSpan) {
-        let originalWord = existingSpan.getAttribute("data-original");
-
-        // Replace the span with the original word
-        let textNode = document.createTextNode(` ${originalWord} `); // Ensure spacing
-        existingSpan.replaceWith(textNode);
-
-        console.log(`Restored '${selectedText}' to '${originalWord}' (black color).`);
-        return;
-    }
+    if (!chosenDifficulty) return;
+    console.log(`Chosen difficulty: ${chosenDifficulty}`);
 
     console.log(`Fetching synonym for: ${selectedText}`);
     
-    // Call API only once and store result
-    let simplerWord;
-    if (!wordToggles.has(selectedText)) {
-        simplerWord = await getSimplerWord(selectedText, fullText);
-        if (!simplerWord || simplerWord === selectedText) {
-            console.log(`No appropriate synonym found for '${selectedText}'.`);
-            return;
-        }
-        wordToggles.set(simplerWord, selectedText); // Store for toggling later
-    } else {
-        simplerWord = wordToggles.get(selectedText);
+    let simplerWord = await getSimplerWord(selectedText, document.body.innerText, chosenDifficulty);
+    if (!simplerWord || simplerWord === selectedText) {
+        console.log(`No appropriate synonym found for "${selectedText}".`);
+        return;
     }
-
-    // Create a <span> to highlight only the replaced word
+    
+    wordToggles.set(selectedText, simplerWord);
     let span = document.createElement("span");
-    span.textContent = ` ${simplerWord} `; // Ensures spacing around the word
+    span.textContent = ` ${simplerWord} `;
     span.style.color = "red";
     span.classList.add("simplified-word");
     span.setAttribute("data-word", simplerWord);
-    span.setAttribute("data-original", selectedText); // Store original word for reverting
+    span.setAttribute("data-original", selectedText);
 
-    // Replace only the clicked word with the new <span>
     range.deleteContents();
     range.insertNode(span);
-
-    console.log(`Replaced '${selectedText}' with '${simplerWord}' (red color).`);
+    console.log(`Replaced "${selectedText}" with "${simplerWord}".`);
 });
 
+// Detect text selection and show "Read Aloud" button
+document.addEventListener("mouseup", async (event) => {
+    const selectionObj = window.getSelection();
+    const selectedText = selectionObj.toString().trim();
 
-
-// Bias & Misinformation Detection
-async function analyzeTextForBias(text) {
-    try {
-        if (!GEMINI_API_KEY) await fetchAPIKey();
-
-        const response = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
-            {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    contents: [
-                        {
-                            parts: [
-                                {
-                                    text: `Analyze the following paragraph for bias, misinformation, or sensationalism. 
-                                           If biased, explain why briefly. If misinformation, correct it. 
-                                           Otherwise, return 'Neutral'. Provide a 1-2 sentence explanation.
-                                           \n\nParagraph: "${text}"`
-                                }
-                            ]
-                        }
-                    ]
-                })
-            }
-        );
-
-        if (!response.ok) throw new Error(`API Error: ${response.status} - ${response.statusText}`);
-
-        const data = await response.json();
-        const analysis = data?.candidates?.[0]?.content?.parts?.[0]?.text || "No analysis available.";
-
-        return analysis;
-        
-    } catch (error) {
-        console.error("Failed to analyze text:", error);
-        return "Error analyzing text.";
-    }
-}
-
-// Function to create a floating box for displaying analysis
-function createAnalysisBox(result) {
-    let existingBox = document.getElementById("bias-analysis-box");
-    if (existingBox) existingBox.remove(); // Remove old box if present
-
-    let analysisBox = document.createElement("div");
-    analysisBox.id = "bias-analysis-box";
-    analysisBox.textContent = result;
-
-    // Style the box
-    analysisBox.style.position = "fixed";
-    analysisBox.style.bottom = "20px";
-    analysisBox.style.left = "50%";
-    analysisBox.style.transform = "translateX(-50%)";
-    analysisBox.style.padding = "15px";
-    analysisBox.style.borderRadius = "8px";
-    analysisBox.style.boxShadow = "0px 4px 10px rgba(0,0,0,0.2)";
-    analysisBox.style.fontSize = "16px";
-    analysisBox.style.fontWeight = "bold";
-    analysisBox.style.zIndex = "9999";
-    analysisBox.style.backgroundColor = result.toLowerCase().includes("neutral") ? "#4CAF50" : "#D32F2F";
-    analysisBox.style.color = "white";
-    analysisBox.style.maxWidth = "80%";
-    analysisBox.style.textAlign = "center";
-
-    document.body.appendChild(analysisBox);
-
-    // Remove the box after 7 seconds
-    setTimeout(() => {
-        if (analysisBox) analysisBox.remove();
-    }, 7000);
-}
-
-// Detect text selection and trigger analysis (only for full sentences/paragraphs)
-document.addEventListener("mouseup", async () => {
-    let selection = window.getSelection().toString().trim();
-
-    if (selection.length > 20 && selection.includes(".")) { // Ensure it's at least a sentence
-        console.log(`Analyzing selected text: "${selection}"`);
-        let result = await analyzeTextForBias(selection);
-        createAnalysisBox(result);
-    } else {
-        console.log("Selected text is too short for bias detection.");
+    if (selectedText.length > 0 && selectionObj.rangeCount > 0) {
+        const range = selectionObj.getRangeAt(0);
+        const rect = range.getBoundingClientRect();
+        createReadAloudButton(rect.right, rect.top - 40, selectedText);
     }
 });
+
+// Create a floating "Read Aloud" button
+function createReadAloudButton(x, y, selectedText) {
+    readAloudCounter++;
+    const button = document.createElement("button");
+    const buttonId = `read-aloud-button-${readAloudCounter}`;
+    button.id = buttonId;
+    button.textContent = "Read Aloud";
+    button.style.position = "absolute";
+    button.style.left = `${x}px`;
+    button.style.top = `${y}px`;
+    button.style.zIndex = "10000";
+    button.style.padding = "8px 12px";
+    button.style.fontSize = "14px";
+    button.style.cursor = "pointer";
+    button.style.background = "red";
+    button.style.color = "white";
+    button.style.border = "none";
+    button.style.borderRadius = "4px";
+
+    button.addEventListener("click", () => {
+        console.log("Read Aloud button clicked. Speaking text:", selectedText);
+        speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(selectedText);
+        speechSynthesis.speak(utterance);
+        button.remove();
+    });
+
+    document.body.appendChild(button);
+    setTimeout(() => { if (document.getElementById(buttonId)) document.getElementById(buttonId).remove(); }, 10000);
+}
