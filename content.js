@@ -3,6 +3,7 @@ console.log("SimplyRead content script loaded.");
 // Store original words and their replacements
 const wordToggles = new Map();
 let GEMINI_API_KEY = "";
+let readAloudCounter = 0; // to generate unique ids
 
 // Function to get API key
 function fetchAPIKey() {
@@ -20,13 +21,11 @@ function fetchAPIKey() {
     });
 }
 
-
 // Function to get a simpler synonym using Gemini API, with a readability level
 async function getSimplerWord(word, context, level) {
     try {
         if (!GEMINI_API_KEY) await fetchAPIKey();
 
-        // Construct a prompt that includes the readability difficulty
         const prompt = `Provide only one synonym for '${word}' suitable for a ${level} readability level in this context: ${context}. 
                         Do NOT return a full sentence or explanation—only a single word response.`;
 
@@ -37,9 +36,7 @@ async function getSimplerWord(word, context, level) {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     contents: [
-                        {
-                            parts: [{ text: prompt }]
-                        }
+                        { parts: [{ text: prompt }] }
                     ]
                 })
             }
@@ -49,41 +46,37 @@ async function getSimplerWord(word, context, level) {
 
         const data = await response.json();
         const synonymText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-
-        // Extract only the first word (if the API still returns a phrase)
         const simplerWord = synonymText.split(/[.,\s]/)[0].trim();
 
         return simplerWord && simplerWord !== word ? simplerWord : word;
-        
     } catch (error) {
         console.error("Failed to fetch simpler word:", error);
-        return word; // If API fails, return the original word
+        return word;
     }
 }
 
 // Function to create a UI popup for selecting a difficulty level with cancellation on outside click
 function chooseDifficulty(selectedWord) {
     return new Promise((resolve) => {
-        // Create the popup container
         const popup = document.createElement("div");
         popup.id = "difficulty-popup";
         popup.style.position = "fixed";
         popup.style.top = "50%";
         popup.style.left = "50%";
         popup.style.transform = "translate(-50%, -50%)";
-        popup.style.background = "white";
+        // Updated: set the entire popup background to red with white text for contrast
+        popup.style.background = "red";
+        popup.style.color = "white";
         popup.style.padding = "15px";
         popup.style.border = "1px solid black";
         popup.style.zIndex = "10000";
         popup.style.boxShadow = "0px 4px 6px rgba(0, 0, 0, 0.1)";
         popup.style.textAlign = "center";
 
-        // Create a message
         const message = document.createElement("p");
         message.textContent = `Select a difficulty level for "${selectedWord}":`;
         popup.appendChild(message);
 
-        // Array of difficulties
         const difficulties = ["Easy", "Medium", "Hard"];
         difficulties.forEach(level => {
             const button = document.createElement("button");
@@ -91,8 +84,12 @@ function chooseDifficulty(selectedWord) {
             button.style.margin = "5px";
             button.style.padding = "5px 10px";
             button.style.cursor = "pointer";
+            // Updated: ensure button background remains red for consistency
+            button.style.background = "red";
+            button.style.color = "white";
+            button.style.border = "none";
+            button.style.borderRadius = "4px";
             button.addEventListener("click", (e) => {
-                // Stop the outside click from immediately triggering cancellation
                 e.stopPropagation();
                 cleanup();
                 resolve(level);
@@ -102,42 +99,36 @@ function chooseDifficulty(selectedWord) {
 
         document.body.appendChild(popup);
 
-        // Function to cleanup the popup and event listener
         function cleanup() {
             document.body.removeChild(popup);
             document.removeEventListener("click", outsideClickListener);
         }
 
-        // Outside click listener that cancels the selection if clicked anywhere outside the popup
         function outsideClickListener(e) {
             if (!popup.contains(e.target)) {
                 cleanup();
-                resolve(null); // Resolve with null to indicate cancellation
+                resolve(null);
             }
         }
-        // Add the outside click listener
         document.addEventListener("click", outsideClickListener);
     });
 }
 
-// Function to replace or restore a word on double-click
+// Replace or restore a word on double-click
 document.addEventListener("dblclick", async (event) => {
     console.log("Double-click detected!");
-
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return;
 
     const range = selection.getRangeAt(0);
     const selectedText = selection.toString().trim();
-    if (!selectedText || selectedText.split(" ").length > 1) return; // Ignore multi-word selections
+    if (!selectedText || selectedText.split(" ").length > 1) return;
 
-    // If the double-clicked text is within a simplified span, revert it
     const anchorNode = selection.anchorNode;
     if (anchorNode && anchorNode.parentElement && anchorNode.parentElement.classList.contains("simplified-word")) {
         const originalWord = anchorNode.parentElement.getAttribute("data-original");
-        const textNode = document.createTextNode(` ${originalWord} `); // Ensure spacing
+        const textNode = document.createTextNode(` ${originalWord} `);
         anchorNode.parentElement.replaceWith(textNode);
-        // Remove the mapping so the word can be simplified again later
         if (wordToggles.has(originalWord)) {
             wordToggles.delete(originalWord);
         }
@@ -145,7 +136,6 @@ document.addEventListener("dblclick", async (event) => {
         return;
     }
 
-    // Prevent re-simplifying if the word is already simplified elsewhere
     if (wordToggles.has(selectedText)) {
         console.log(`"${selectedText}" is already simplified. Double-click on the simplified word to revert.`);
         return;
@@ -153,10 +143,8 @@ document.addEventListener("dblclick", async (event) => {
 
     let parentElement = range.startContainer.parentElement;
     let fullText = parentElement.innerText;
-
     console.log(`Fetching synonym for: ${selectedText}`);
     
-    // Prompt the user to choose a difficulty level
     const chosenDifficulty = await chooseDifficulty(selectedText);
     if (!chosenDifficulty) {
         console.log("Difficulty selection cancelled.");
@@ -164,37 +152,101 @@ document.addEventListener("dblclick", async (event) => {
     }
     console.log(`Chosen difficulty: ${chosenDifficulty}`);
 
-    // Call API with the selected readability level
     let simplerWord = await getSimplerWord(selectedText, fullText, chosenDifficulty);
     if (!simplerWord || simplerWord === selectedText) {
         console.log(`No appropriate synonym found for "${selectedText}".`);
         return;
     }
     
-    // Store the mapping to prevent multiple simplifications until reverted
     wordToggles.set(selectedText, simplerWord);
-
-    // Create a <span> to highlight the replaced word
     let span = document.createElement("span");
-    span.textContent = ` ${simplerWord} `; // Ensure spacing around the word
+    span.textContent = ` ${simplerWord} `;
     span.style.color = "red";
     span.classList.add("simplified-word");
     span.setAttribute("data-word", simplerWord);
-    span.setAttribute("data-original", selectedText); // Store original word for reverting
+    span.setAttribute("data-original", selectedText);
 
-    // Replace only the clicked word with the new <span>
     range.deleteContents();
     range.insertNode(span);
-
     console.log(`Replaced "${selectedText}" with "${simplerWord}".`);
 });
 
+// Fetch a concise definition using Gemini API
+async function getDefinition(word, context) {
+    try {
+        if (!GEMINI_API_KEY) await fetchAPIKey();
+        const prompt = `Provide a concise, easy-to-understand definition for the word '${word}' in this context: ${context}. Do NOT provide any extra commentary—only the definition.`;
+        const response = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    contents: [ { parts: [{ text: prompt }] } ]
+                })
+            }
+        );
 
-// Bias & Misinformation Detection
+        if (!response.ok)
+            throw new Error(`API Error: ${response.status} - ${response.statusText}`);
+
+        const data = await response.json();
+        const definitionText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        return definitionText.trim();
+    } catch (error) {
+        console.error("Failed to fetch definition:", error);
+        return "";
+    }
+}
+
+// Create a tooltip-style pop-up
+function createTooltip(text, x, y) {
+    let existingTooltip = document.getElementById("definition-tooltip");
+    if (existingTooltip) existingTooltip.remove();
+
+    const tooltip = document.createElement("div");
+    tooltip.id = "definition-tooltip";
+    tooltip.style.position = "absolute";
+    tooltip.style.left = `${x + 10}px`;
+    tooltip.style.top = `${y + 10}px`;
+    tooltip.style.background = "rgba(0, 0, 0, 0.8)";
+    tooltip.style.color = "white";
+    tooltip.style.padding = "5px 8px";
+    tooltip.style.borderRadius = "4px";
+    tooltip.style.zIndex = "10000";
+    tooltip.style.fontSize = "14px";
+    tooltip.style.maxWidth = "250px";
+    tooltip.style.wordWrap = "break-word";
+    tooltip.textContent = text;
+    document.body.appendChild(tooltip);
+}
+
+// Remove the tooltip
+function removeTooltip() {
+    let tooltip = document.getElementById("definition-tooltip");
+    if (tooltip) tooltip.remove();
+}
+
+// Show definition tooltip on hover for difficult words
+document.addEventListener("mouseover", async (event) => {
+    const target = event.target;
+    if (target.classList.contains("difficult-word")) {
+        const word = target.textContent.trim();
+        const context = target.parentElement ? target.parentElement.innerText : "";
+        const definition = await getDefinition(word, context);
+        if (definition) createTooltip(definition, event.pageX, event.pageY);
+    }
+});
+
+document.addEventListener("mouseout", (event) => {
+    const target = event.target;
+    if (target.classList.contains("difficult-word")) removeTooltip();
+});
+
+// Analyze text for bias and create a floating analysis box
 async function analyzeTextForBias(text) {
     try {
         if (!GEMINI_API_KEY) await fetchAPIKey();
-
         const response = await fetch(
             `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
             {
@@ -202,44 +254,32 @@ async function analyzeTextForBias(text) {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     contents: [
-                        {
-                            parts: [
-                                {
-                                    text: `Analyze the following paragraph for bias, misinformation, or sensationalism. 
-                                           If biased, explain why briefly. If misinformation, correct it. 
-                                           Otherwise, return 'Neutral'. Provide a 1-2 sentence explanation.
-                                           \n\nParagraph: "${text}"`
-                                }
-                            ]
-                        }
+                        { parts: [ { text: `Analyze the following paragraph for bias, misinformation, or sensationalism. 
+                                                   If biased, explain why briefly. If misinformation, correct it. 
+                                                   Otherwise, return 'Neutral'. Provide a 1-2 sentence explanation.
+                                                   \n\nParagraph: "${text}"` } ] }
                     ]
                 })
             }
         );
 
         if (!response.ok) throw new Error(`API Error: ${response.status} - ${response.statusText}`);
-
         const data = await response.json();
         const analysis = data?.candidates?.[0]?.content?.parts?.[0]?.text || "No analysis available.";
-
         return analysis;
-        
     } catch (error) {
         console.error("Failed to analyze text:", error);
         return "Error analyzing text.";
     }
 }
 
-// Function to create a floating box for displaying analysis
 function createAnalysisBox(result) {
     let existingBox = document.getElementById("bias-analysis-box");
-    if (existingBox) existingBox.remove(); // Remove old box if present
+    if (existingBox) existingBox.remove();
 
     let analysisBox = document.createElement("div");
     analysisBox.id = "bias-analysis-box";
     analysisBox.textContent = result;
-
-    // Style the box
     analysisBox.style.position = "fixed";
     analysisBox.style.bottom = "20px";
     analysisBox.style.left = "50%";
@@ -254,22 +294,66 @@ function createAnalysisBox(result) {
     analysisBox.style.color = "white";
     analysisBox.style.maxWidth = "80%";
     analysisBox.style.textAlign = "center";
-
     document.body.appendChild(analysisBox);
 
-    // Remove the box after 7 seconds
-    setTimeout(() => {
-        if (analysisBox) analysisBox.remove();
-    }, 7000);
+    setTimeout(() => { if (analysisBox) analysisBox.remove(); }, 3000);
 }
 
-// Detect text selection and trigger analysis (only for full sentences/paragraphs)
-document.addEventListener("mouseup", async () => {
-    let selection = window.getSelection().toString().trim();
+// Create a floating "Read Aloud" button near the text selection
+function createReadAloudButton(x, y, selectedText) {
+    readAloudCounter++;
+    const button = document.createElement("button");
+    const buttonId = `read-aloud-button-${readAloudCounter}`;
+    button.id = buttonId;
+    button.textContent = "Read Aloud";
+    button.style.position = "absolute";
+    button.style.left = `${x}px`;
+    button.style.top = `${y}px`;
+    button.style.zIndex = "10000";
+    button.style.padding = "8px 12px";
+    button.style.fontSize = "14px";
+    button.style.cursor = "pointer";
+    button.style.background = "red";
+    button.style.color = "white";
+    button.style.border = "none";
+    button.style.borderRadius = "4px";
 
-    if (selection.length > 20 && selection.includes(".")) { // Ensure it's at least a sentence
-        console.log(`Analyzing selected text: "${selection}"`);
-        let result = await analyzeTextForBias(selection);
+    button.addEventListener("click", () => {
+        console.log("Read Aloud button clicked. Speaking text:", selectedText);
+        // Cancel any ongoing speech to avoid overlaps
+        speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(selectedText);
+        speechSynthesis.speak(utterance);
+        // Remove button after click
+        button.remove();
+    });
+
+    document.body.appendChild(button);
+
+    // Auto-remove the button after 10 seconds if not clicked
+    setTimeout(() => {
+        if (document.getElementById(buttonId)) {
+            document.getElementById(buttonId).remove();
+        }
+    }, 10000);
+}
+
+// Detect text selection and show "Read Aloud" button plus trigger bias analysis if applicable
+document.addEventListener("mouseup", async (event) => {
+    const selectionObj = window.getSelection();
+    const selectedText = selectionObj.toString().trim();
+
+    // Only create a new button if there is a valid selection.
+    if (selectedText.length > 0 && selectionObj.rangeCount > 0) {
+        const range = selectionObj.getRangeAt(0);
+        const rect = range.getBoundingClientRect();
+        createReadAloudButton(rect.right, rect.top - 40, selectedText);
+    }
+
+    // Trigger bias analysis if selected text is long enough
+    if (selectedText.length > 20 && selectedText.includes(".")) {
+        console.log(`Analyzing selected text: "${selectedText}"`);
+        let result = await analyzeTextForBias(selectedText);
         createAnalysisBox(result);
     } else {
         console.log("Selected text is too short for bias detection.");
