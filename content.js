@@ -20,10 +20,15 @@ function fetchAPIKey() {
     });
 }
 
-// Function to get simpler synonym using Gemini API
-async function getSimplerWord(word, context) {
+
+// Function to get a simpler synonym using Gemini API, with a readability level
+async function getSimplerWord(word, context, level) {
     try {
         if (!GEMINI_API_KEY) await fetchAPIKey();
+
+        // Construct a prompt that includes the readability difficulty
+        const prompt = `Provide only one synonym for '${word}' suitable for a ${level} readability level in this context: ${context}. 
+                        Do NOT return a full sentence or explanation—only a single word response.`;
 
         const response = await fetch(
             `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
@@ -33,12 +38,7 @@ async function getSimplerWord(word, context) {
                 body: JSON.stringify({
                     contents: [
                         {
-                            parts: [
-                                {
-                                    text: `Provide only one simpler synonym (a single word) for '${word}' in this context: ${context}. 
-                                    Do NOT return a full sentence or explanation—only a single word response.`
-                                }
-                            ]
+                            parts: [{ text: prompt }]
                         }
                     ]
                 })
@@ -61,7 +61,66 @@ async function getSimplerWord(word, context) {
     }
 }
 
-// Function to replace or restore a word on double click
+// Function to create a UI popup for selecting a difficulty level with cancellation on outside click
+function chooseDifficulty(selectedWord) {
+    return new Promise((resolve) => {
+        // Create the popup container
+        const popup = document.createElement("div");
+        popup.id = "difficulty-popup";
+        popup.style.position = "fixed";
+        popup.style.top = "50%";
+        popup.style.left = "50%";
+        popup.style.transform = "translate(-50%, -50%)";
+        popup.style.background = "white";
+        popup.style.padding = "15px";
+        popup.style.border = "1px solid black";
+        popup.style.zIndex = "10000";
+        popup.style.boxShadow = "0px 4px 6px rgba(0, 0, 0, 0.1)";
+        popup.style.textAlign = "center";
+
+        // Create a message
+        const message = document.createElement("p");
+        message.textContent = `Select a difficulty level for "${selectedWord}":`;
+        popup.appendChild(message);
+
+        // Array of difficulties
+        const difficulties = ["Easy", "Medium", "Hard"];
+        difficulties.forEach(level => {
+            const button = document.createElement("button");
+            button.textContent = level;
+            button.style.margin = "5px";
+            button.style.padding = "5px 10px";
+            button.style.cursor = "pointer";
+            button.addEventListener("click", (e) => {
+                // Stop the outside click from immediately triggering cancellation
+                e.stopPropagation();
+                cleanup();
+                resolve(level);
+            });
+            popup.appendChild(button);
+        });
+
+        document.body.appendChild(popup);
+
+        // Function to cleanup the popup and event listener
+        function cleanup() {
+            document.body.removeChild(popup);
+            document.removeEventListener("click", outsideClickListener);
+        }
+
+        // Outside click listener that cancels the selection if clicked anywhere outside the popup
+        function outsideClickListener(e) {
+            if (!popup.contains(e.target)) {
+                cleanup();
+                resolve(null); // Resolve with null to indicate cancellation
+            }
+        }
+        // Add the outside click listener
+        document.addEventListener("click", outsideClickListener);
+    });
+}
+
+// Function to replace or restore a word on double-click
 document.addEventListener("dblclick", async (event) => {
     console.log("Double-click detected!");
 
@@ -72,43 +131,52 @@ document.addEventListener("dblclick", async (event) => {
     const selectedText = selection.toString().trim();
     if (!selectedText || selectedText.split(" ").length > 1) return; // Ignore multi-word selections
 
-    let node = range.startContainer;
-    if (node.nodeType !== 3) return; // Ensure it's a text node
-
-    let parentElement = node.parentElement;
-    let fullText = parentElement.innerText;
-
-    // Check if the word was previously replaced
-    let existingSpan = document.querySelector(`span.simplified-word[data-word="${selectedText}"]`);
-    if (existingSpan) {
-        let originalWord = existingSpan.getAttribute("data-original");
-
-        // Replace the span with the original word
-        let textNode = document.createTextNode(` ${originalWord} `); // Ensure spacing
-        existingSpan.replaceWith(textNode);
-
-        console.log(`Restored '${selectedText}' to '${originalWord}' (black color).`);
+    // If the double-clicked text is within a simplified span, revert it
+    const anchorNode = selection.anchorNode;
+    if (anchorNode && anchorNode.parentElement && anchorNode.parentElement.classList.contains("simplified-word")) {
+        const originalWord = anchorNode.parentElement.getAttribute("data-original");
+        const textNode = document.createTextNode(` ${originalWord} `); // Ensure spacing
+        anchorNode.parentElement.replaceWith(textNode);
+        // Remove the mapping so the word can be simplified again later
+        if (wordToggles.has(originalWord)) {
+            wordToggles.delete(originalWord);
+        }
+        console.log(`Restored "${selectedText}" to "${originalWord}".`);
         return;
     }
 
-    console.log(`Fetching synonym for: ${selectedText}`);
-    
-    // Call API only once and store result
-    let simplerWord;
-    if (!wordToggles.has(selectedText)) {
-        simplerWord = await getSimplerWord(selectedText, fullText);
-        if (!simplerWord || simplerWord === selectedText) {
-            console.log(`No appropriate synonym found for '${selectedText}'.`);
-            return;
-        }
-        wordToggles.set(simplerWord, selectedText); // Store for toggling later
-    } else {
-        simplerWord = wordToggles.get(selectedText);
+    // Prevent re-simplifying if the word is already simplified elsewhere
+    if (wordToggles.has(selectedText)) {
+        console.log(`"${selectedText}" is already simplified. Double-click on the simplified word to revert.`);
+        return;
     }
 
-    // Create a <span> to highlight only the replaced word
+    let parentElement = range.startContainer.parentElement;
+    let fullText = parentElement.innerText;
+
+    console.log(`Fetching synonym for: ${selectedText}`);
+    
+    // Prompt the user to choose a difficulty level
+    const chosenDifficulty = await chooseDifficulty(selectedText);
+    if (!chosenDifficulty) {
+        console.log("Difficulty selection cancelled.");
+        return;
+    }
+    console.log(`Chosen difficulty: ${chosenDifficulty}`);
+
+    // Call API with the selected readability level
+    let simplerWord = await getSimplerWord(selectedText, fullText, chosenDifficulty);
+    if (!simplerWord || simplerWord === selectedText) {
+        console.log(`No appropriate synonym found for "${selectedText}".`);
+        return;
+    }
+    
+    // Store the mapping to prevent multiple simplifications until reverted
+    wordToggles.set(selectedText, simplerWord);
+
+    // Create a <span> to highlight the replaced word
     let span = document.createElement("span");
-    span.textContent = ` ${simplerWord} `; // Ensures spacing around the word
+    span.textContent = ` ${simplerWord} `; // Ensure spacing around the word
     span.style.color = "red";
     span.classList.add("simplified-word");
     span.setAttribute("data-word", simplerWord);
@@ -118,9 +186,8 @@ document.addEventListener("dblclick", async (event) => {
     range.deleteContents();
     range.insertNode(span);
 
-    console.log(`Replaced '${selectedText}' with '${simplerWord}' (red color).`);
+    console.log(`Replaced "${selectedText}" with "${simplerWord}".`);
 });
-
 
 
 // Bias & Misinformation Detection
